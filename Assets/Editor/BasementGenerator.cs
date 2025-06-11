@@ -3,13 +3,13 @@ using System.Linq;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.ProBuilder;
-using UnityEngine.ProBuilder.MeshOperations;  // still included for other mesh ops
+using UnityEngine.ProBuilder.MeshOperations;  // for DeleteElements & ExtrudeElements
 
 public static class BasementGenerator
 {
-    private const string RootName = "Basement_Root";
-    private const float SLAB_THICK = 0.1f;
-    private const float GROUND_Y   = 0f;
+    private const string RootName  = "Basement_Root";
+    private const float  SLAB_THICK = 0.1f;
+    private const float  GROUND_Y   = 0f;
 
     [MenuItem("Tools/House/Generate Basement")]
     public static void GenerateBasement()
@@ -49,6 +49,23 @@ public static class BasementGenerator
 
             pb.ToMesh();
             pb.Refresh(RefreshMask.All);
+
+            // ← ensure a shared material exists and set it to white
+            var mr = go.GetComponent<Renderer>();
+            if (mr != null)
+            {
+                var mat = mr.sharedMaterial;
+                if (mat == null)
+                {
+                    mat = new Material(Shader.Find("Standard")) { color = Color.white };
+                    mr.sharedMaterial = mat;
+                }
+                else
+                {
+                    mat.color = Color.white;
+                }
+            }
+
             return pb;
         }
 
@@ -144,34 +161,61 @@ public static class BasementGenerator
         // ─── 2. Stairs & Landing ────────────────────────────────────────────────────
         for (int i = 1; i <= 12; i++)
         {
-            // 1) Tread position
-            float stepY = GROUND_Y + wallH - (i * (wallH / 12f)) + 0.15f / 2f;
-            float stepZ = 30f - ((i - 1) * (16f / 12f)) - ((16f / 12f) / 2f);
+            float stepY = GROUND_Y + wallH - (i * (wallH/12f)) + 0.15f/2f;
+            float stepZ = 30f - ((i - 1) * (16f/12f)) - ((16f/12f)/2f);
 
             var tread = CreatePbShape(
                 $"Step_{i}",
                 ShapeType.Cube,
                 new Vector3(2.5f, stepY, stepZ),
-                new Vector3(5f, 0.15f, 16f / 12f),
-                root.transform
-            );
+                new Vector3(5f, 0.15f, 16f/12f),
+                root.transform);
 
-            // 2) Riser to fill gap under tread
-            float stepHeight = wallH / 12f;
-            float gapHeight  = stepHeight - 0.15f;
-            float riserY     = stepY - (stepHeight / 2f);
-            float riserZ     = stepZ - (16f / 12f) / 2f;
+            // delete back face
+            var back = tread.faces.FirstOrDefault(f =>
+            {
+                int vi = f.distinctIndexes[0];
+                Vector3 nrm = tread.normals[vi];
+                return Vector3.Dot(nrm, Vector3.forward) > 0.99f;
+            });
 
-            CreatePbShape(
-                $"Riser_{i}",
-                ShapeType.Cube,
-                new Vector3(2.5f, riserY, riserZ),
-                new Vector3(5f, gapHeight, 16f / 12f),
-                root.transform
-            );
+            if (back != null)
+            {
+                DeleteElements.DeleteFaces(tread, new[] { back });
+                tread.ToMesh();
+                tread.Refresh(RefreshMask.All);
 
-            tread.ToMesh();
-            tread.Refresh(RefreshMask.All);
+                var mr2 = tread.GetComponent<Renderer>();
+                if (mr2 != null)
+                {
+                    var mat2 = mr2.sharedMaterial;
+                    if (mat2 != null) mat2.color = Color.white;
+                }
+            }
+
+            // extend bottom face to ground
+            var bottomFace = tread.faces.FirstOrDefault(f =>
+            {
+                int vi = f.distinctIndexes[0];
+                Vector3 nrm = tread.normals[vi];
+                return Vector3.Dot(nrm, Vector3.down) > 0.99f;
+            });
+
+            if (bottomFace != null)
+            {
+                float extrudeDist = stepY - (0.15f/2f);
+                ExtrudeElements.Extrude(tread, new[] { bottomFace }, ExtrudeMethod.FaceNormal, extrudeDist);
+
+                tread.ToMesh();
+                tread.Refresh(RefreshMask.All);
+
+                var mr3 = tread.GetComponent<Renderer>();
+                if (mr3 != null)
+                {
+                    var mat3 = mr3.sharedMaterial;
+                    if (mat3 != null) mat3.color = Color.white;
+                }
+            }
         }
 
         CreatePbShape("Landing",
@@ -196,11 +240,14 @@ public static class BasementGenerator
                       root.transform,
                       12);
 
-        CreatePbShape("BreakerPanel",
-                      ShapeType.Cube,
-                      new Vector3(7.5f, GROUND_Y + 4f, 29.45f),
-                      new Vector3(1f, 1.5f, 0.1f),
-                      root.transform);
+        // ─── Breaker Panel (rotated 90° on Y) ───────────────────────────────────────
+        var breaker = CreatePbShape(
+            "BreakerPanel",
+            ShapeType.Cube,
+            new Vector3(eastX - (wallTh/2f) - 0.05f, GROUND_Y + 4f, leftW/2f),
+            new Vector3(1f, 1.5f, 0.1f),
+            root.transform);
+        breaker.gameObject.transform.localRotation = Quaternion.Euler(0, 90, 0);
 
         CreatePbShape("WaterHeater",
                       ShapeType.Cylinder,
@@ -228,7 +275,7 @@ public static class BasementGenerator
                           new Vector3(55f, GROUND_Y + 1f, 25f),
                           Vector3.one * 0.2f);
 
-        // lighting placeholders...
+        // lighting placeholders
         CreatePlaceholder("Bulb_Landing",      PrimitiveType.Sphere, new Vector3( 2.5f, 6.5f, 12.5f), Vector3.one * 0.3f);
         CreatePlaceholder("Pullchain_Landing", PrimitiveType.Cube,   new Vector3( 2.5f, 6.0f, 12.5f), Vector3.one * 0.1f);
         CreatePlaceholder("Bulb_Midroom",      PrimitiveType.Sphere, new Vector3(30f,  6.8f,  8f),    Vector3.one * 0.3f);
@@ -236,11 +283,30 @@ public static class BasementGenerator
         CreatePlaceholder("Bulb_SW",           PrimitiveType.Sphere, new Vector3( 8f,  6.8f, 25f),    Vector3.one * 0.3f);
         CreatePlaceholder("Pullchain_SW",      PrimitiveType.Cube,   new Vector3( 8f,  6.3f, 25f),    Vector3.one * 0.1f);
 
-        // some furniture...
-        CreatePbShape("FilingCab_Barricade", ShapeType.Cube, new Vector3(18f, GROUND_Y + 1.25f, 12f), new Vector3(6f, 2.5f, 1f), root.transform);
-        CreatePbShape("DeskStack",            ShapeType.Cube, new Vector3(40f, GROUND_Y + 1.5f,  7f), new Vector3(5f, 3f,   2.5f), root.transform);
-        CreatePbShape("ChairPile",            ShapeType.Cube, new Vector3(47f, GROUND_Y + 2f,    12f), new Vector3(4f, 4f,   4f  ), root.transform);
-        CreatePbShape("Copier",               ShapeType.Cube, new Vector3(35f, GROUND_Y + 1.5f, 23f), new Vector3(3f, 2f,   3f  ), root.transform);
+        // ─── Boxes on the floor ─────────────────────────────────────────────────────
+        CreatePbShape("FilingCab_Barricade",
+                      ShapeType.Cube,
+                      new Vector3(18f, GROUND_Y + 1.25f, 12f),
+                      new Vector3(6f, 2.5f, 1f),
+                      root.transform);
+
+        CreatePbShape("DeskStack",
+                      ShapeType.Cube,
+                      new Vector3(40f, GROUND_Y + 1.5f,  7f),
+                      new Vector3(5f, 3f,   2.5f),
+                      root.transform);
+
+        CreatePbShape("ChairPile",
+                      ShapeType.Cube,
+                      new Vector3(47f, GROUND_Y + 2f,    12f),
+                      new Vector3(4f, 4f,   4f),
+                      root.transform);
+
+        CreatePbShape("Copier",
+                      ShapeType.Cube,
+                      new Vector3(35f, GROUND_Y + 1.5f, 23f),
+                      new Vector3(3f, 2f,   3f),
+                      root.transform);
 
         // ─── Finalize ───────────────────────────────────────────────────────────────
         Selection.activeGameObject = root;
